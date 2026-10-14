@@ -154,6 +154,11 @@ const AUTO_UPDATE = !!autoUpdater && app.isPackaged && process.platform === 'win
 let updateState = { status: 'idle' };
 function sendUpdate(s) { updateState = s; if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('presenter:updateStatus', s); }
 function setupAutoUpdater() {
+  // Write the updater's own messages to %APPDATA%\Presenter\updater.log, so a failed update can be diagnosed.
+  const logFile = path.join(app.getPath('userData'), 'updater.log');
+  try { if (fs.statSync(logFile).size > 200000) fs.unlinkSync(logFile); } catch (e) {}
+  const w = (lvl) => (...a) => { try { fs.appendFileSync(logFile, new Date().toISOString() + ' ' + lvl + ' ' + a.map((x) => (x && x.stack) || String(x)).join(' ') + '\n'); } catch (e) {} };
+  autoUpdater.logger = { info: w('INFO'), warn: w('WARN'), error: w('ERROR'), debug: w('DEBUG') };
   autoUpdater.autoDownload = true;            // download in the background
   autoUpdater.autoInstallOnAppQuit = true;    // if the user clicks "Later", it installs when they quit
   autoUpdater.on('checking-for-update', () => sendUpdate({ status: 'checking' }));
@@ -169,11 +174,15 @@ function setupAutoUpdater() {
       message: 'PRESENTER ' + i.version + ' has been downloaded.',
       detail: 'Update Now restarts PRESENTER and installs it. If you choose Later, it installs the next time you close PRESENTER.'
     });
-    if (choice.response === 0) setImmediate(() => autoUpdater.quitAndInstall());
+    if (choice.response === 0) setImmediate(() => autoUpdater.quitAndInstall(true, true));   // silent install, then reopen PRESENTER
   });
 }
 async function autoCheck() {
-  try { await autoUpdater.checkForUpdates(); } catch (e) { /* 'error' event already reported it */ }
+  if (['checking', 'downloading', 'ready'].includes(updateState.status)) return;   // already busy, or an update is waiting to install
+  try {
+    const r = await autoUpdater.checkForUpdates();
+    if (r && r.downloadPromise) r.downloadPromise.catch(() => {});                 // the 'error' event already reported it
+  } catch (e) { /* 'error' event already reported it */ }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -254,7 +263,7 @@ ipcMain.handle('presenter:getVersion', () => app.getVersion());
 ipcMain.handle('presenter:checkForUpdates', async () => {
   if (!AUTO_UPDATE) return checkForUpdates();                       // Mac / dev run: manual flow
   if (updateState.status === 'downloading' || updateState.status === 'checking') return { status: 'busy', current: app.getVersion() };
-  if (updateState.status === 'ready') { autoUpdater.quitAndInstall(); return { status: 'ready', current: app.getVersion(), latest: updateState.latest }; }
+  if (updateState.status === 'ready') { autoUpdater.quitAndInstall(true, true); return { status: 'ready', current: app.getVersion(), latest: updateState.latest }; }
   try {
     const r = await autoUpdater.checkForUpdates();
     const latest = r && r.updateInfo && r.updateInfo.version;
@@ -300,7 +309,7 @@ else {
     });
     serverInfo = await server.start({ dataDir: app.getPath('userData'), appDir: __dirname, ai: { identify: aiIdentify, lyrics: aiLyrics, translate: (t, to, from) => aiHub.translate(t, to, from) } });
     createMainWindow();
-    if (AUTO_UPDATE) { setupAutoUpdater(); setTimeout(autoCheck, 5000); }   // check shortly after launch
+    if (AUTO_UPDATE) { setupAutoUpdater(); setTimeout(autoCheck, 5000); setInterval(autoCheck, 4 * 60 * 60 * 1000); }   // check shortly after launch, then every 4 hours (the app can stay open for days)
     app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createMainWindow(); });
   }).catch((e) => { dialog.showErrorBox('PRESENTER could not start', String(e && e.message || e)); app.quit(); });
   app.on('will-quit', () => { try { serverInfo && serverInfo.speech && serverInfo.speech.stop(); } catch (e) {} });   // never leave whisper-server running
