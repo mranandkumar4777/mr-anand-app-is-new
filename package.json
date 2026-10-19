@@ -1,7 +1,7 @@
 {
   "name": "p1-app-pc",
   "productName": "PRESENTER",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "PRESENTER - lyric / slide presenter with phone remote",
   "main": "main.js",
   "author": "mranandkumar4777",
